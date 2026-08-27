@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Sistem Penjaga Barang Pintar</title>
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; text-align: center; background-color: #2c3e50; color: white; padding-top: 30px; }
+    .card { background-color: #34495e; padding: 30px; border-radius: 15px; box-shadow: 0 8px 30px rgba(0,0,0,0.5); display: inline-block; }
+    .camera-container { position: relative; margin-bottom: 20px; }
+    #video { display: none; }
+    #canvas { border-radius: 10px; transform: scaleX(-1); display: block; margin: 0 auto; cursor: crosshair; background-color: #000; }
+    #statusText { font-size: 20px; font-weight: bold; padding: 15px; border-radius: 8px; margin-top: 15px; }
+    .status-siap { background-color: #f39c12; color: #fff; }
+    .status-aman { background-color: #2ecc71; color: #fff; }
+    .status-peringatan { background-color: #e67e22; color: #fff; }
+    .status-hilang { background-color: #e74c3c; color: #fff; animation: blink 0.5s infinite; }
+    button { padding: 12px 24px; font-size: 18px; font-weight: bold; margin-top: 15px; background-color: #3498db; color: white; border: none; border-radius: 8px; cursor: pointer; }
+    button:hover { background-color: #2980b9; }
+    @keyframes blink { 50% { opacity: 0.5; } }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🛡️ Penjaga Barang Pribadi</h1>
+    <p>Arahkan barang ke dalam kotak, lalu klik kunci.</p>
+    
+    <div class="camera-container">
+      <video id="video" width="400" height="300" autoplay muted playsinline></video>
+      <canvas id="canvas" width="400" height="300"></canvas>
+    </div>
+    
+    <br>
+    <button id="btnKunci" onclick="kunciBarang()" style="display:none;">🔒 Kunci Barang Sekarang</button>
+    <button id="btnBatal" onclick="batalKunci()" style="display:none; background-color:#e74c3c;">❌ Buka Kunci (Reset Sistem)</button>
+    
+    <div id="statusText" class="status-siap">Menunggu kamera...</div>
+  </div>
+
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const statusText = document.getElementById('statusText');
+    const btnKunci = document.getElementById('btnKunci');
+    const btnBatal = document.getElementById('btnBatal');
+    
+    const box = { x: 125, y: 75, w: 150, h: 150 }; 
+    let baselineData = null; 
+    let isLocked = false;
+    let currentKondisi = ""; 
+
+    // --- SESUAIKAN IP ESP32 ANDA DARI THONNY ---
+    const ipESP32 = "http://192.168.20.70"; 
+
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    
+    function playSound(type) {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      
+      if (type === 'peringatan') {
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(400, audioCtx.currentTime);
+        gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.1); 
+      } else if (type === 'hilang') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(800, audioCtx.currentTime); 
+        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.3);
+      }
+    }
+
+    async function startCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        video.srcObject = stream;
+        video.onloadedmetadata = () => {
+          video.play();
+          statusText.innerHTML = "Kamera Aktif. Posisikan barang...";
+          btnKunci.style.display = 'inline-block';
+          setInterval(detectLogic, 150); 
+        };
+      } catch (err) {
+        statusText.innerHTML = `🚨 Error Kamera. Izinkan di Chrome.`;
+        statusText.className = "status-hilang";
+      }
+    }
+
+    function kunciBarang() {
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      baselineData = ctx.getImageData(box.x, box.y, box.w, box.h);
+      isLocked = true;
+      currentKondisi = "aman";
+      btnKunci.style.display = 'none';
+      btnBatal.style.display = 'inline-block';
+      statusText.innerHTML = "✅ Barang Terkunci & Aman";
+      statusText.className = "status-aman";
+      
+      fetch(ipESP32 + "/status/aman").catch(() => {});
+    }
+
+    function batalKunci() {
+      isLocked = false;
+      baselineData = null;
+      btnKunci.style.display = 'inline-block';
+      btnBatal.style.display = 'none';
+      statusText.innerHTML = "Kamera Aktif. Posisikan barang...";
+      statusText.className = "status-siap";
+      
+      currentKondisi = "aman";
+      fetch(ipESP32 + "/status/aman").catch(() => {});
+    }
+
+    function detectLogic() {
+      if (video.readyState !== 4) return;
+      
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      ctx.strokeStyle = isLocked ? "#2ecc71" : "#ff00ff"; 
+      ctx.lineWidth = 4;
+      ctx.strokeRect(box.x, box.y, box.w, box.h);
+
+      if (isLocked && baselineData) {
+        const currentData = ctx.getImageData(box.x, box.y, box.w, box.h);
+        let totalDiff = 0;
+        
+        for (let i = 0; i < currentData.data.length; i += 4) {
+          totalDiff += Math.abs(currentData.data[i] - baselineData.data[i]) + 
+                       Math.abs(currentData.data[i+1] - baselineData.data[i+1]) + 
+                       Math.abs(currentData.data[i+2] - baselineData.data[i+2]);
+        }
+        
+        const avgDiff = totalDiff / (box.w * box.h);
+
+        if (avgDiff > 55) { 
+          // 1. BARANG HILANG (Merah + Buzzer Nyaring)
+          statusText.innerHTML = "🚨 BARANG HILANG!! 🚨";
+          statusText.className = "status-hilang";
+          playSound('hilang');
+          
+          if (currentKondisi !== "hilang") {
+            fetch(ipESP32 + "/status/hilang").catch(() => {}); 
+            currentKondisi = "hilang";
+          }
+          
+        } else if (avgDiff > 28) {
+          // 2. ADA YANG MENDEKAT (Kuning + Buzzer Peringatan)
+          statusText.innerHTML = "⚠️ ADA YANG MENDEKAT!";
+          statusText.className = "status-peringatan";
+          
+          if (currentKondisi !== "mendekat") {
+            fetch(ipESP32 + "/status/mendekat").catch(() => {}); 
+            currentKondisi = "mendekat";
+          }
+          
+        } else {
+          // 3. AMAN (Hijau + Buzzer Mati) - Diperbaiki agar langsung reset kembali ke aman
+          statusText.innerHTML = "✅ Barang Terkunci & Aman";
+          statusText.className = "status-aman";
+          
+          if (currentKondisi !== "aman") {
+            fetch(ipESP32 + "/status/aman").catch(() => {});
+            currentKondisi = "aman";
+          }
+        }
+      }
+    }
+    
+    startCamera();
+  </script>
+</body>
+</html>
